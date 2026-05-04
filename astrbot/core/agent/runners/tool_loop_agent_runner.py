@@ -40,6 +40,7 @@ from astrbot.core.persona_error_reply import (
 from astrbot.core.provider.entities import (
     LLMResponse,
     ProviderRequest,
+    ProviderType,
     ToolCallsResult,
 )
 from astrbot.core.provider.modalities import (
@@ -488,6 +489,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
         for idx, candidate in enumerate(candidates):
             candidate_id = candidate.provider_config.get("id", "<unknown>")
             is_last_candidate = idx == total_candidates - 1
+            fallback_provider_persisted = False
             if idx > 0:
                 logger.warning(
                     "Switched from %s to fallback chat provider: %s",
@@ -531,10 +533,23 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                                     )
                                     break
 
+                                if (
+                                    idx > 0
+                                    and resp.role != "err"
+                                    and not fallback_provider_persisted
+                                ):
+                                    await self._persist_successful_fallback_provider(
+                                        candidate
+                                    )
+                                    fallback_provider_persisted = True
                                 yield resp
                                 return
 
                             if has_stream_output:
+                                if idx > 0 and not fallback_provider_persisted:
+                                    await self._persist_successful_fallback_provider(
+                                        candidate
+                                    )
                                 return
                         except EmptyModelOutputError:
                             if has_stream_output:
@@ -576,6 +591,38 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             role="err",
             completion_text="All available chat models are unavailable.",
         )
+
+    async def _persist_successful_fallback_provider(self, provider: Provider) -> None:
+        provider_id = provider.provider_config.get("id")
+        if not isinstance(provider_id, str) or not provider_id:
+            return
+
+        agent_context = getattr(self.run_context, "context", None)
+        event = getattr(agent_context, "event", None)
+        umo = getattr(event, "unified_msg_origin", None)
+        if not isinstance(umo, str) or not umo:
+            return
+
+        plugin_context = getattr(agent_context, "context", None)
+        provider_manager = getattr(plugin_context, "provider_manager", None)
+        set_provider = getattr(provider_manager, "set_provider", None)
+        if not callable(set_provider):
+            return
+
+        try:
+            await set_provider(
+                provider_id=provider_id,
+                provider_type=ProviderType.CHAT_COMPLETION,
+                umo=umo,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Failed to persist fallback chat provider %s for umo=%s: %s",
+                provider_id,
+                umo,
+                exc,
+                exc_info=True,
+            )
 
     def _sanitize_contexts_for_provider(
         self,
@@ -1402,7 +1449,7 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
                     "Tool execution interrupted before reading the next tool result."
                 )
 
-            next_result_task = asyncio.create_task(anext(executor))
+            next_result_task = asyncio.ensure_future(anext(executor))
             abort_task = asyncio.create_task(self._abort_signal.wait())
             try:
                 done, _ = await asyncio.wait(

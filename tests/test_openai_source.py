@@ -1,4 +1,5 @@
 import builtins
+import importlib
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +9,7 @@ from PIL import Image as PILImage
 
 import astrbot.core.provider.sources.openai_source as openai_source_module
 from astrbot.core.exceptions import EmptyModelOutputError
+from astrbot.core.provider.entities import LLMResponse
 from astrbot.core.provider.sources.groq_source import ProviderGroq
 from astrbot.core.provider.sources.openai_source import ProviderOpenAIOfficial
 
@@ -76,9 +78,9 @@ def test_create_http_client_uses_openai_httpx_module(monkeypatch):
     provider = ProviderOpenAIOfficial.__new__(ProviderOpenAIOfficial)
     provider._create_http_client({"proxy": ""})
 
-    from openai import _base_client as openai_base_client
+    openai_base_client = importlib.import_module("openai._base_client")
 
-    assert captured["httpx_module"] is openai_base_client.httpx
+    assert captured["httpx_module"] is getattr(openai_base_client, "httpx")
 
 
 def test_create_http_client_falls_back_to_global_httpx_module(monkeypatch):
@@ -644,6 +646,36 @@ async def test_handle_api_error_invalid_attachment_after_fallback_raises():
                 max_retries=10,
                 image_fallback_used=True,
             )
+    finally:
+        await provider.terminate()
+
+
+@pytest.mark.asyncio
+async def test_text_chat_remembers_successful_rotated_key_for_session(monkeypatch):
+    provider = _make_provider({"key": ["key-a", "key-b"]})
+    seen_keys: list[str] = []
+    try:
+
+        async def fake_prepare_chat_payload(*_args, **_kwargs):
+            return {"messages": []}, []
+
+        async def fake_query(_payloads, _func_tool):
+            seen_keys.append(provider.client.api_key)
+            if provider.client.api_key == "key-a":
+                raise Exception("429 rate limit")
+            return LLMResponse(role="assistant", completion_text="ok")
+
+        monkeypatch.setattr(
+            provider, "_prepare_chat_payload", fake_prepare_chat_payload
+        )
+        monkeypatch.setattr(provider, "_query", fake_query)
+
+        first_response = await provider.text_chat(session_id="umo:test")
+        second_response = await provider.text_chat(session_id="umo:test")
+
+        assert first_response.completion_text == "ok"
+        assert second_response.completion_text == "ok"
+        assert seen_keys == ["key-a", "key-b", "key-b"]
     finally:
         await provider.terminate()
 
@@ -1784,5 +1816,244 @@ async def test_query_filters_empty_list_content_assistant_message(monkeypatch):
         assert len(messages) == 2
         assert messages[0] == {"role": "user", "content": "hi"}
         assert messages[1] == {"role": "user", "content": "again"}
+    finally:
+        await provider.terminate()
+
+
+class _ErrorWithStatusCode429(Exception):
+    """模拟带有 status_code=429 的异常"""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.status_code = 429
+
+
+class _ErrorWithStatusCode500(Exception):
+    """模拟带有 status_code=500 的异常"""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.status_code = 500
+
+
+def test_is_rate_limit_error_detects_status_code():
+    """429 检测应优先检查 status_code 属性"""
+    provider = ProviderOpenAIOfficial.__new__(ProviderOpenAIOfficial)
+    assert provider._is_rate_limit_error(_ErrorWithStatusCode429("rate limited"))
+    assert not provider._is_rate_limit_error(_ErrorWithStatusCode500("server error"))
+
+
+def test_is_rate_limit_error_fallbacks_to_string():
+    """429 检测在无 status_code 时应 fallback 到字符串匹配"""
+    provider = ProviderOpenAIOfficial.__new__(ProviderOpenAIOfficial)
+    assert provider._is_rate_limit_error(Exception("429 rate limit"))
+    assert not provider._is_rate_limit_error(Exception("500 server error"))
+
+
+@pytest.mark.asyncio
+async def test_preferred_keys_cache_is_trimmed(monkeypatch):
+    """内存限制：缓存超过上限时应删除最早的条目"""
+    provider = _make_provider({"key": ["key-a", "key-b"]})
+    try:
+        # 缩小上限以便测试
+        provider._MAX_PREFERRED_KEYS_CACHE_SIZE = 3
+
+        async def fake_prepare(*_a, **_k):
+            return {"messages": []}, []
+
+        async def fake_query(_p, _f):
+            return LLMResponse(role="assistant", completion_text="ok")
+
+        monkeypatch.setattr(provider, "_prepare_chat_payload", fake_prepare)
+        monkeypatch.setattr(provider, "_query", fake_query)
+
+        # 创建 5 个不同 session 的偏好
+        for i in range(5):
+            await provider.text_chat(session_id=f"session:{i}")
+
+        # 缓存应被修剪到 3 个
+        assert len(provider._preferred_api_keys_by_session) == 3
+        # 最早的 2 个（session:0, session:1）应被删除
+        assert "session:0" not in provider._preferred_api_keys_by_session
+        assert "session:1" not in provider._preferred_api_keys_by_session
+        # 最新的 3 个应保留
+        assert "session:2" in provider._preferred_api_keys_by_session
+        assert "session:3" in provider._preferred_api_keys_by_session
+        assert "session:4" in provider._preferred_api_keys_by_session
+
+    finally:
+        await provider.terminate()
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_with_status_code_429_forgets_key(monkeypatch):
+    """status_code=429 的异常应正确触发 key 遗忘"""
+    provider = _make_provider({"key": ["key-a", "key-b"]})
+    seen_keys: list[str] = []
+    try:
+
+        async def fake_prepare(*_a, **_k):
+            return {"messages": []}, []
+
+        async def fake_query(_p, _f):
+            seen_keys.append(provider.client.api_key)
+            if provider.client.api_key == "key-a":
+                raise _ErrorWithStatusCode429("rate limited")
+            return LLMResponse(role="assistant", completion_text="ok")
+
+        monkeypatch.setattr(provider, "_prepare_chat_payload", fake_prepare)
+        monkeypatch.setattr(provider, "_query", fake_query)
+
+        resp = await provider.text_chat(session_id="session:test")
+        assert resp.completion_text == "ok"
+        assert seen_keys == ["key-a", "key-b"]
+
+        # 第二次请求应直接使用 key-b（key-a 被遗忘了）
+        seen_keys.clear()
+        resp2 = await provider.text_chat(session_id="session:test")
+        assert resp2.completion_text == "ok"
+        assert seen_keys == ["key-b"]
+
+    finally:
+        await provider.terminate()
+
+
+@pytest.mark.asyncio
+async def test_different_sessions_use_independent_preferred_keys(monkeypatch):
+    """KR-02: 不同 session 的 key 偏好相互隔离"""
+    provider = _make_provider({"key": ["key-a", "key-b"]})
+    seen_keys = []
+    try:
+
+        async def fake_prepare(*_a, **_k):
+            return {"messages": []}, []
+
+        async def fake_query(_p, _f):
+            seen_keys.append(provider.client.api_key)
+            if provider.client.api_key == "key-a":
+                raise Exception("429 rate limit")
+            return LLMResponse(role="assistant", completion_text="ok")
+
+        monkeypatch.setattr(provider, "_prepare_chat_payload", fake_prepare)
+        monkeypatch.setattr(provider, "_query", fake_query)
+
+        # Session A: key-a fails, key-b succeeds and is remembered
+        resp_a = await provider.text_chat(session_id="session:A")
+        assert resp_a.completion_text == "ok"
+
+        # Session B: should NOT directly use key-b (A's preference)
+        # It should try key-a first because no session preference for B
+        resp_b = await provider.text_chat(session_id="session:B")
+        assert resp_b.completion_text == "ok"
+        # Verify B started with key-a, not key-b
+        assert "key-a" in seen_keys[2:]
+
+    finally:
+        await provider.terminate()
+
+
+@pytest.mark.asyncio
+async def test_all_keys_429_raises_without_remembering(monkeypatch):
+    """KR-03: 所有 key 都 429 失败，不记住任何 key"""
+    provider = _make_provider({"key": ["key-a", "key-b"]})
+    try:
+
+        async def fake_prepare(*_a, **_k):
+            return {"messages": []}, []
+
+        async def fake_query(_p, _f):
+            raise Exception("429 rate limit")
+
+        monkeypatch.setattr(provider, "_prepare_chat_payload", fake_prepare)
+        monkeypatch.setattr(provider, "_query", fake_query)
+
+        with pytest.raises(Exception, match="429"):
+            await provider.text_chat(session_id="session:test")
+
+        # After all keys fail, next call should still try (and fail) randomly
+        with pytest.raises(Exception, match="429"):
+            await provider.text_chat(session_id="session:test")
+
+    finally:
+        await provider.terminate()
+
+
+@pytest.mark.asyncio
+async def test_non_429_error_does_not_forget_preferred_key(monkeypatch):
+    """KR-04: 非 429 错误不遗忘已记住的 key"""
+    provider = _make_provider({"key": ["key-a", "key-b"]})
+    try:
+        call_count = 0
+
+        async def fake_prepare(*_a, **_k):
+            return {"messages": []}, []
+
+        async def fake_query(_p, _f):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise Exception("429 rate limit")
+            if call_count == 2:
+                return LLMResponse(role="assistant", completion_text="ok")
+            raise Exception("500 internal server error")
+
+        monkeypatch.setattr(provider, "_prepare_chat_payload", fake_prepare)
+        monkeypatch.setattr(provider, "_query", fake_query)
+
+        # First call: 429 -> key-b succeeds and is remembered
+        await provider.text_chat(session_id="session:test")
+
+        # Second call: 500 error, should NOT forget key-b
+        with pytest.raises(Exception, match="500"):
+            await provider.text_chat(session_id="session:test")
+
+        # Third call: should still use key-b (preferred key not forgotten)
+        async def success_query(_p, _f):
+            return LLMResponse(role="assistant", completion_text="still-ok")
+
+        monkeypatch.setattr(provider, "_query", success_query)
+        resp = await provider.text_chat(session_id="session:test")
+        assert resp.completion_text == "still-ok"
+
+    finally:
+        await provider.terminate()
+
+
+@pytest.mark.asyncio
+async def test_stream_remembers_successful_key_after_429(monkeypatch):
+    """KR-05: 流式响应 key 轮换后记住成功的 key"""
+    provider = _make_provider({"key": ["key-a", "key-b"]})
+    seen_keys: list[str] = []
+    try:
+
+        async def fake_prepare(*_a, **_k):
+            return {"messages": []}, []
+
+        async def fake_query_stream(_p, _f):
+            seen_keys.append(provider.client.api_key)
+            if provider.client.api_key == "key-a":
+                raise Exception("429 rate limit")
+            yield LLMResponse(role="assistant", completion_text="ok", is_chunk=True)
+            yield LLMResponse(role="assistant", completion_text="final", is_chunk=False)
+
+        monkeypatch.setattr(provider, "_prepare_chat_payload", fake_prepare)
+        monkeypatch.setattr(provider, "_query_stream", fake_query_stream)
+
+        # First stream: key-a 429, key-b succeeds
+        chunks = []
+        async for chunk in provider.text_chat_stream(session_id="stream:test"):
+            chunks.append(chunk)
+
+        assert len(chunks) == 2
+        assert chunks[-1].completion_text == "final"
+
+        # Second stream: should use key-b directly (remembered)
+        chunks2 = []
+        async for chunk in provider.text_chat_stream(session_id="stream:test"):
+            chunks2.append(chunk)
+
+        assert len(chunks2) == 2
+        assert seen_keys == ["key-a", "key-b", "key-b"]
+
     finally:
         await provider.terminate()

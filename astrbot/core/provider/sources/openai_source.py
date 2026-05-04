@@ -453,8 +453,9 @@ class ProviderOpenAIOfficial(Provider):
     def __init__(self, provider_config, provider_settings) -> None:
         super().__init__(provider_config, provider_settings)
         self.chosen_api_key = None
-        self.api_keys: list = super().get_keys()
+        self.api_keys: list[str] = super().get_keys()
         self.chosen_api_key = self.api_keys[0] if len(self.api_keys) > 0 else None
+        self._preferred_api_keys_by_session: dict[str, str] = {}
         self.timeout = provider_config.get("timeout", 120)
         self.custom_headers = provider_config.get("custom_headers", {})
         if isinstance(self.timeout, str):
@@ -494,6 +495,63 @@ class ProviderOpenAIOfficial(Provider):
         self.set_model(model)
 
         self.reasoning_key = "reasoning_content"
+
+    @staticmethod
+    def _api_key_session_scope(session_id: str | None) -> str:
+        if isinstance(session_id, str) and session_id:
+            return session_id
+        return "__global__"
+
+    def _choose_initial_api_key(
+        self,
+        available_api_keys: list[str],
+        session_id: str | None,
+    ) -> str:
+        scope = self._api_key_session_scope(session_id)
+        preferred_key = self._preferred_api_keys_by_session.get(scope)
+        if preferred_key in available_api_keys:
+            return preferred_key
+        if self.chosen_api_key in available_api_keys:
+            return self.chosen_api_key
+        return random.choice(available_api_keys)
+
+    def _remember_successful_api_key(
+        self,
+        session_id: str | None,
+        api_key: str,
+    ) -> None:
+        if api_key not in self.api_keys:
+            return
+        scope = self._api_key_session_scope(session_id)
+        self._preferred_api_keys_by_session[scope] = api_key
+        if scope == "__global__":
+            self.chosen_api_key = api_key
+        self._trim_preferred_keys_cache()
+
+    def _forget_failed_api_key(
+        self,
+        session_id: str | None,
+        api_key: str,
+    ) -> None:
+        scope = self._api_key_session_scope(session_id)
+        if self._preferred_api_keys_by_session.get(scope) == api_key:
+            self._preferred_api_keys_by_session.pop(scope, None)
+
+    _MAX_PREFERRED_KEYS_CACHE_SIZE: int = 1000
+
+    def _trim_preferred_keys_cache(self) -> None:
+        cache = self._preferred_api_keys_by_session
+        limit = self._MAX_PREFERRED_KEYS_CACHE_SIZE
+        while len(cache) > limit:
+            oldest = next(iter(cache))
+            cache.pop(oldest)
+
+    @staticmethod
+    def _is_rate_limit_error(error: Exception) -> bool:
+        status_code = getattr(error, "status_code", None)
+        if status_code == 429:
+            return True
+        return "429" in str(error)
 
     def _ollama_disable_thinking_enabled(self) -> bool:
         value = self.provider_config.get("ollama_disable_thinking", False)
@@ -1055,7 +1113,7 @@ class ProviderOpenAIOfficial(Provider):
         image_fallback_used: bool = False,
     ) -> tuple:
         """处理API错误并尝试恢复"""
-        if "429" in str(e):
+        if self._is_rate_limit_error(e):
             logger.warning(
                 f"API 调用过于频繁，尝试使用其他 Key 重试。当前 Key: {chosen_key[:12]}",
             )
@@ -1191,7 +1249,7 @@ class ProviderOpenAIOfficial(Provider):
         llm_response = None
         max_retries = 10
         available_api_keys = self.api_keys.copy()
-        chosen_key = random.choice(available_api_keys)
+        chosen_key = self._choose_initial_api_key(available_api_keys, session_id)
         image_fallback_used = False
 
         last_exception = None
@@ -1203,6 +1261,8 @@ class ProviderOpenAIOfficial(Provider):
                 break
             except Exception as e:
                 last_exception = e
+                if self._is_rate_limit_error(e):
+                    self._forget_failed_api_key(session_id, chosen_key)
                 (
                     success,
                     chosen_key,
@@ -1230,6 +1290,7 @@ class ProviderOpenAIOfficial(Provider):
             if last_exception is None:
                 raise Exception("未知错误")
             raise last_exception
+        self._remember_successful_api_key(session_id, chosen_key)
         return llm_response
 
     async def text_chat_stream(
@@ -1262,7 +1323,7 @@ class ProviderOpenAIOfficial(Provider):
 
         max_retries = 10
         available_api_keys = self.api_keys.copy()
-        chosen_key = random.choice(available_api_keys)
+        chosen_key = self._choose_initial_api_key(available_api_keys, session_id)
         image_fallback_used = False
 
         last_exception = None
@@ -1272,9 +1333,12 @@ class ProviderOpenAIOfficial(Provider):
                 self.client.api_key = chosen_key
                 async for response in self._query_stream(payloads, func_tool):
                     yield response
+                self._remember_successful_api_key(session_id, chosen_key)
                 break
             except Exception as e:
                 last_exception = e
+                if self._is_rate_limit_error(e):
+                    self._forget_failed_api_key(session_id, chosen_key)
                 (
                     success,
                     chosen_key,

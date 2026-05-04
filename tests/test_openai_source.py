@@ -1873,7 +1873,7 @@ async def test_preferred_keys_cache_is_trimmed(monkeypatch):
 
         # 缓存应被修剪到 3 个
         assert len(provider._preferred_api_keys_by_session) == 3
-        # 最早的 2 个（session:0, session:1）应被删除
+        # LRU 策略：session:0 和 session:1 最早且未被再次访问，应被淘汰
         assert "session:0" not in provider._preferred_api_keys_by_session
         assert "session:1" not in provider._preferred_api_keys_by_session
         # 最新的 3 个应保留

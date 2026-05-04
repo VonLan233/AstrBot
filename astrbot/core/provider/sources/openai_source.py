@@ -507,10 +507,18 @@ class ProviderOpenAIOfficial(Provider):
         available_api_keys: list[str],
         session_id: str | None,
     ) -> str:
+        import time
+
         scope = self._api_key_session_scope(session_id)
-        preferred_key = self._preferred_api_keys_by_session.get(scope)
-        if preferred_key in available_api_keys:
-            return preferred_key
+        entry = self._preferred_api_keys_by_session.get(scope)
+        if entry is not None:
+            preferred_key, _ = entry
+            if preferred_key in available_api_keys:
+                self._preferred_api_keys_by_session[scope] = (
+                    preferred_key,
+                    time.time(),
+                )
+                return preferred_key
         if self.chosen_api_key in available_api_keys:
             return self.chosen_api_key
         return random.choice(available_api_keys)
@@ -520,10 +528,12 @@ class ProviderOpenAIOfficial(Provider):
         session_id: str | None,
         api_key: str,
     ) -> None:
+        import time
+
         if api_key not in self.api_keys:
             return
         scope = self._api_key_session_scope(session_id)
-        self._preferred_api_keys_by_session[scope] = api_key
+        self._preferred_api_keys_by_session[scope] = (api_key, time.time())
         if scope == "__global__":
             self.chosen_api_key = api_key
         self._trim_preferred_keys_cache()
@@ -534,7 +544,8 @@ class ProviderOpenAIOfficial(Provider):
         api_key: str,
     ) -> None:
         scope = self._api_key_session_scope(session_id)
-        if self._preferred_api_keys_by_session.get(scope) == api_key:
+        entry = self._preferred_api_keys_by_session.get(scope)
+        if entry is not None and entry[0] == api_key:
             self._preferred_api_keys_by_session.pop(scope, None)
 
     _MAX_PREFERRED_KEYS_CACHE_SIZE: int = 1000
@@ -543,7 +554,7 @@ class ProviderOpenAIOfficial(Provider):
         cache = self._preferred_api_keys_by_session
         limit = self._MAX_PREFERRED_KEYS_CACHE_SIZE
         while len(cache) > limit:
-            oldest = next(iter(cache))
+            oldest = min(cache, key=lambda k: cache[k][1])
             cache.pop(oldest)
 
     @staticmethod

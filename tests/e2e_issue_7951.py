@@ -41,13 +41,12 @@ async def test_api_key_rotation_with_real_provider():
     print(f"Model: {model}")
     print(f"Key prefix: {api_key[:8]}...")
 
-    # Create provider with multiple keys (first is fake, second is real)
-    fake_key = "sk-fakekey123456789012345678901234567890"
+    invalid_placeholder_key = "sk-INVALID-PLACEHOLDER-KEY-NOT-REAL-12345"
     provider_config = {
         "id": "test-e2e",
         "type": "openai_chat_completion",
         "model": model,
-        "key": [fake_key, api_key],
+        "key": [invalid_placeholder_key, api_key],
         "api_base": api_base,
     }
 

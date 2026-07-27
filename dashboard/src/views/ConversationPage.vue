@@ -206,7 +206,7 @@
         <!-- 对话详情对话框 -->
         <v-dialog v-model="dialogView" max-width="900px" scrollable>
             <v-card class="conversation-detail-card">
-                <v-card-title class="ml-2 mt-2 conversation-detail-title">
+                <v-card-title class="text-h3 pa-4 pb-0 pl-6 conversation-detail-title">
                     <div class="conversation-detail-heading">
                         <span class="text-truncate">{{ selectedConversation?.title || tm('status.noTitle') }}</span>
                         <UmoDisplay v-if="selectedConversation?.user_id && hasConversationUmoReadableName(selectedConversation)"
@@ -227,20 +227,20 @@
                     </div>
                 </v-card-title>
 
-                <v-card-text>
-                    <div class="mb-4 d-flex align-center">
-                        <v-btn color="secondary" variant="tonal" size="small" class="mr-2"
-                            @click="isEditingHistory = !isEditingHistory">
-                            <v-icon class="mr-1">{{ isEditingHistory ? 'mdi-eye' : 'mdi-pencil' }}</v-icon>
-                            {{ isEditingHistory ? tm('dialogs.view.previewMode') : tm('dialogs.view.editMode') }}
-                        </v-btn>
-                        <v-btn v-if="isEditingHistory" color="success" variant="tonal" size="small"
-                            :loading="savingHistory" @click="saveHistoryChanges">
-                            <v-icon class="mr-1">mdi-content-save</v-icon>
-                            {{ tm('dialogs.view.saveChanges') }}
-                        </v-btn>
-                    </div>
+                <div class="pl-6 pr-4 pt-4 pb-2 d-flex align-center">
+                    <v-btn color="secondary" variant="tonal" size="small" class="mr-2"
+                        @click="isEditingHistory = !isEditingHistory">
+                        <v-icon class="mr-1">{{ isEditingHistory ? 'mdi-eye' : 'mdi-pencil' }}</v-icon>
+                        {{ isEditingHistory ? tm('dialogs.view.previewMode') : tm('dialogs.view.editMode') }}
+                    </v-btn>
+                    <v-btn v-if="isEditingHistory" color="success" variant="tonal" size="small"
+                        :loading="savingHistory" @click="saveHistoryChanges">
+                        <v-icon class="mr-1">mdi-content-save</v-icon>
+                        {{ tm('dialogs.view.saveChanges') }}
+                    </v-btn>
+                </div>
 
+                <v-card-text>
                     <!-- 编辑模式 - Monaco编辑器 -->
                     <div v-if="isEditingHistory" class="monaco-editor-container">
                         <VueMonacoEditor v-model:value="editedHistory" theme="vs-dark" language="json" :options="{
@@ -254,9 +254,7 @@
                     </div>
 
                     <!-- 预览模式 - 聊天界面 -->
-                    <div v-else class="conversation-messages-container" style="background-color: var(--v-theme-surface);"
-                        ref="messagesContainer"
-                        @wheel.prevent="onContainerWheel">
+                    <div v-else class="conversation-messages-container" style="background-color: var(--v-theme-surface);">
                         <!-- 空对话提示 -->
                         <div v-if="conversationHistory.length === 0" class="text-center py-5">
                             <v-icon size="48" color="grey">mdi-chat-remove</v-icon>
@@ -280,8 +278,8 @@
         <!-- 编辑对话框 -->
         <v-dialog v-model="dialogEdit" max-width="500px">
             <v-card>
-                <v-card-title class="bg-primary text-white py-3">
-                    <v-icon color="white" class="me-2">mdi-pencil</v-icon>
+                <v-card-title class="text-h3 pa-4 pb-0 pl-6">
+                    <v-icon color="primary" class="me-2">mdi-pencil</v-icon>
                     <span>{{ tm('dialogs.edit.title') }}</span>
                 </v-card-title>
 
@@ -300,7 +298,7 @@
                     <v-btn variant="text" @click="dialogEdit = false" :disabled="loading">
                         {{ tm('dialogs.edit.cancel') }}
                     </v-btn>
-                    <v-btn color="primary" @click="saveConversation" :loading="loading">
+                    <v-btn color="primary" variant="tonal" @click="saveConversation" :loading="loading">
                         {{ tm('dialogs.edit.save') }}
                     </v-btn>
                 </v-card-actions>
@@ -310,8 +308,8 @@
         <!-- 删除确认对话框 -->
         <v-dialog v-model="dialogDelete" max-width="500px">
             <v-card>
-                <v-card-title class="bg-error text-white py-3">
-                    <v-icon color="white" class="me-2">mdi-alert</v-icon>
+                <v-card-title class="text-h3 pa-4 pb-0 pl-6">
+                    <v-icon color="error" class="me-2">mdi-alert</v-icon>
                     <span>{{ tm('dialogs.delete.title') }}</span>
                 </v-card-title>
 
@@ -327,7 +325,7 @@
                     <v-btn variant="text" @click="dialogDelete = false" :disabled="loading">
                         {{ tm('dialogs.delete.cancel') }}
                     </v-btn>
-                    <v-btn color="error" @click="deleteConversation" :loading="loading">
+                    <v-btn color="error" variant="tonal" @click="deleteConversation" :loading="loading">
                         {{ tm('dialogs.delete.confirm') }}
                     </v-btn>
                 </v-card-actions>
@@ -337,8 +335,8 @@
         <!-- 批量删除确认对话框 -->
         <v-dialog v-model="dialogBatchDelete" max-width="600px">
             <v-card>
-                <v-card-title class="bg-error text-white py-3">
-                    <v-icon color="white" class="me-2">mdi-delete</v-icon>
+                <v-card-title class="text-h3 pa-4 pb-0 pl-6">
+                    <v-icon color="error" class="me-2">mdi-delete</v-icon>
                     <span>{{ tm('dialogs.batchDelete.title') }}</span>
                 </v-card-title>
 
@@ -369,7 +367,7 @@
                     <v-btn variant="text" @click="dialogBatchDelete = false" :disabled="loading">
                         {{ tm('dialogs.batchDelete.cancel') }}
                     </v-btn>
-                    <v-btn color="error" @click="batchDeleteConversations" :loading="loading">
+                    <v-btn color="error" variant="tonal" @click="batchDeleteConversations" :loading="loading">
                         {{ tm('dialogs.batchDelete.confirm') }}
                     </v-btn>
                 </v-card-actions>
@@ -377,7 +375,7 @@
         </v-dialog>
 
         <!-- 消息提示 -->
-        <v-snackbar :timeout="3000" elevation="24" :color="messageType" v-model="showMessage" location="top">
+        <v-snackbar :timeout="3000" elevation="6" :color="messageType" v-model="showMessage" location="top">
             {{ message }}
         </v-snackbar>
     </div>
@@ -1201,13 +1199,6 @@ export default {
             return parts;
         },
 
-        // Manually handle wheel scrolling inside the dialog preview container.
-        onContainerWheel(event) {
-            const el = this.$refs.messagesContainer;
-            if (!el) return;
-            el.scrollTop += event.deltaY;
-        },
-
         // 从内容中提取文本（保留用于其他用途）
         extractTextFromContent(content) {
             if (typeof content === 'string') {
@@ -1256,8 +1247,6 @@ export default {
 
 /* 聊天消息容器样式 */
 .conversation-messages-container {
-    max-height: 500px;
-    overflow-y: auto;
     padding: 8px;
     border-radius: 8px;
     background-color: #f9f9f9;

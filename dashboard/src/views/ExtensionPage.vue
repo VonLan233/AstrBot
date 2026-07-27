@@ -61,6 +61,7 @@ const {
   selectedDangerPlugin,
   selectedMarketInstallPlugin,
   installSupport,
+  installUrlValidation,
   versionSupportDialog,
   showUninstallDialog,
   uninstallTarget,
@@ -127,6 +128,8 @@ const {
   pluginOff,
   openExtensionConfig,
   updateConfig,
+  updatePluginLogLevel,
+  pluginLogLevelSaving,
   showPluginInfo,
   reloadPlugin,
   viewReadme,
@@ -169,6 +172,15 @@ const {
   handleLocaleChange,
   searchDebounceTimer,
 } = pageState;
+
+const logLevelItems = computed(() => [
+  { title: tm("dialogs.config.coreSettings.followGlobal"), value: null },
+  { title: "DEBUG", value: "DEBUG" },
+  { title: "INFO", value: "INFO" },
+  { title: "WARNING", value: "WARNING" },
+  { title: "ERROR", value: "ERROR" },
+  { title: "CRITICAL", value: "CRITICAL" },
+]);
 
 const selectedPluginId = computed(() => {
   const pluginId = route.params.pluginId;
@@ -426,10 +438,34 @@ const updateDialogPluginLogo = computed(() => {
   <!-- 配置对话框 -->
   <v-dialog v-model="configDialog" max-width="900">
     <v-card>
-      <v-card-title class="text-h2 pa-4 pl-6 pb-0">{{
+      <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
         tm("dialogs.config.title")
       }}</v-card-title>
       <v-card-text>
+        <div
+          class="d-flex align-center justify-space-between flex-wrap"
+          style="gap: 12px"
+        >
+          <div>
+            <div class="text-subtitle-1 font-weight-medium">
+              {{ tm("dialogs.config.coreSettings.logLevel") }}
+            </div>
+            <div class="text-caption text-medium-emphasis">
+              {{ tm("dialogs.config.coreSettings.logLevelHint") }}
+            </div>
+          </div>
+          <v-select
+            :model-value="extension_config.log_level"
+            :items="logLevelItems"
+            :loading="pluginLogLevelSaving"
+            density="compact"
+            variant="outlined"
+            hide-details
+            style="max-width: 220px; min-width: 180px"
+            @update:model-value="updatePluginLogLevel"
+          ></v-select>
+        </div>
+        <v-divider class="my-4"></v-divider>
         <div style="max-height: 60vh; overflow-y: auto; padding-right: 8px">
           <AstrBotConfig
             v-if="extension_config.metadata"
@@ -444,9 +480,13 @@ const updateDialogPluginLogo = computed(() => {
       </v-card-text>
       <v-card-actions>
         <v-spacer></v-spacer>
-        <v-btn color="blue-darken-1" variant="text" @click="updateConfig">{{
-          tm("buttons.saveAndClose")
-        }}</v-btn>
+        <v-btn
+          v-if="extension_config.metadata"
+          color="blue-darken-1"
+          variant="text"
+          @click="updateConfig"
+          >{{ tm("buttons.saveAndClose") }}</v-btn
+        >
         <v-btn
           color="blue-darken-1"
           variant="text"
@@ -458,9 +498,14 @@ const updateDialogPluginLogo = computed(() => {
   </v-dialog>
 
   <!-- 加载对话框 -->
-  <v-dialog v-model="loadingDialog.show" width="700" persistent>
+  <v-dialog
+    v-model="loadingDialog.show"
+    width="700"
+    persistent
+    transition="dialog-transition"
+  >
     <v-card>
-      <v-card-title class="text-h5">{{ loadingDialog.title }}</v-card-title>
+      <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{ loadingDialog.title }}</v-card-title>
       <v-card-text style="max-height: calc(100vh - 200px); overflow-y: auto">
         <v-progress-linear
           v-if="loadingDialog.statusCode === 0"
@@ -469,19 +514,24 @@ const updateDialogPluginLogo = computed(() => {
           class="mb-4"
         ></v-progress-linear>
 
-        <div v-if="loadingDialog.statusCode !== 0" class="py-8 text-center">
-          <v-icon
-            class="mb-6"
-            :color="loadingDialog.statusCode === 1 ? 'success' : 'error'"
-            :icon="
-              loadingDialog.statusCode === 1
-                ? 'mdi-check-circle-outline'
-                : 'mdi-alert-circle-outline'
-            "
-            size="128"
-          ></v-icon>
-          <div class="text-h4 font-weight-bold">{{ loadingDialog.result }}</div>
-        </div>
+        <v-fade-transition>
+          <div
+            v-if="loadingDialog.statusCode !== 0"
+            class="py-8 text-center"
+          >
+            <v-icon
+              class="mb-6"
+              :color="loadingDialog.statusCode === 1 ? 'success' : 'error'"
+              :icon="
+                loadingDialog.statusCode === 1
+                  ? 'mdi-check-circle-outline'
+                  : 'mdi-alert-circle-outline'
+              "
+              size="128"
+            ></v-icon>
+            <div class="text-h4 font-weight-bold">{{ loadingDialog.result }}</div>
+          </div>
+        </v-fade-transition>
 
         <div style="margin-top: 32px">
           <h3>{{ tm("dialogs.loading.logs") }}</h3>
@@ -509,7 +559,7 @@ const updateDialogPluginLogo = computed(() => {
 
   <v-snackbar
     :timeout="2000"
-    elevation="24"
+    elevation="6"
     :color="snack_success"
     v-model="snack_show"
     location="bottom center"
@@ -540,7 +590,7 @@ const updateDialogPluginLogo = computed(() => {
   <!-- 更新全部插件确认对话框 -->
   <v-dialog v-model="updateAllConfirmDialog.show" max-width="420">
     <v-card class="rounded-lg">
-      <v-card-title class="d-flex align-center pa-4">
+      <v-card-title class="text-h3 pa-4 pb-0 pl-6 d-flex align-center">
         <v-icon color="warning" class="mr-2">mdi-update</v-icon>
         {{ tm("dialogs.updateAllConfirm.title") }}
       </v-card-title>
@@ -558,7 +608,7 @@ const updateDialogPluginLogo = computed(() => {
         <v-btn variant="text" @click="cancelUpdateAll">{{
           tm("buttons.cancel")
         }}</v-btn>
-        <v-btn color="warning" variant="flat" @click="confirmUpdateAll">{{
+        <v-btn color="warning" variant="tonal" @click="confirmUpdateAll">{{
           tm("dialogs.updateAllConfirm.confirm")
         }}</v-btn>
       </v-card-actions>
@@ -568,7 +618,7 @@ const updateDialogPluginLogo = computed(() => {
   <!-- 指令冲突提示对话框 -->
   <v-dialog v-model="conflictDialog.show" max-width="420">
     <v-card class="rounded-lg">
-      <v-card-title class="d-flex align-center pa-4">
+      <v-card-title class="text-h3 pa-4 pb-0 pl-6 d-flex align-center">
         <v-icon color="warning" class="mr-2">mdi-alert-circle</v-icon>
         {{ tm("conflicts.title") }}
       </v-card-title>
@@ -596,7 +646,7 @@ const updateDialogPluginLogo = computed(() => {
         <v-btn variant="text" @click="conflictDialog.show = false">{{
           tm("conflicts.later")
         }}</v-btn>
-        <v-btn color="warning" variant="flat" @click="handleConflictConfirm">
+        <v-btn color="warning" variant="tonal" @click="handleConflictConfirm">
           {{ tm("conflicts.goToManage") }}
         </v-btn>
       </v-card-actions>
@@ -606,7 +656,7 @@ const updateDialogPluginLogo = computed(() => {
   <!-- 危险插件确认对话框 -->
   <v-dialog v-model="dangerConfirmDialog" width="500" persistent>
     <v-card>
-      <v-card-title class="text-h5 d-flex align-center">
+      <v-card-title class="text-h3 pa-4 pb-0 pl-6 d-flex align-center">
         <v-icon color="warning" class="mr-2">mdi-alert-circle</v-icon>
         {{ tm("dialogs.danger_warning.title") }}
       </v-card-title>
@@ -615,10 +665,10 @@ const updateDialogPluginLogo = computed(() => {
       </v-card-text>
       <v-card-actions>
         <v-spacer></v-spacer>
-        <v-btn color="grey" @click="cancelDangerInstall">
+        <v-btn color="grey" variant="text" @click="cancelDangerInstall">
           {{ tm("dialogs.danger_warning.cancel") }}
         </v-btn>
-        <v-btn color="warning" @click="confirmDangerInstall">
+        <v-btn color="warning" variant="tonal" @click="confirmDangerInstall">
           {{ tm("dialogs.danger_warning.confirm") }}
         </v-btn>
       </v-card-actions>
@@ -628,7 +678,7 @@ const updateDialogPluginLogo = computed(() => {
   <!-- 版本不兼容警告对话框 -->
   <v-dialog v-model="versionSupportDialog.show" width="520" persistent>
     <v-card>
-      <v-card-title class="text-h5 d-flex align-center">
+      <v-card-title class="text-h3 pa-4 pb-0 pl-6 d-flex align-center">
         <v-icon color="warning" class="mr-2">mdi-alert</v-icon>
         {{ tm("dialogs.versionSupport.title") }}
       </v-card-title>
@@ -640,10 +690,10 @@ const updateDialogPluginLogo = computed(() => {
       </v-card-text>
       <v-card-actions>
         <v-spacer></v-spacer>
-        <v-btn color="grey" @click="cancelInstallOnVersionWarning">
+        <v-btn color="grey" variant="text" @click="cancelInstallOnVersionWarning">
           {{ tm("dialogs.versionSupport.cancel") }}
         </v-btn>
-        <v-btn color="warning" @click="continueInstallIgnoringVersionWarning">
+        <v-btn color="warning" variant="tonal" @click="continueInstallIgnoringVersionWarning">
           {{ tm("dialogs.versionSupport.confirm") }}
         </v-btn>
       </v-card-actions>
@@ -787,10 +837,10 @@ const updateDialogPluginLogo = computed(() => {
 
                 <v-btn
                   color="primary"
+                  variant="tonal"
                   size="large"
                   prepend-icon="mdi-upload"
                   @click="$refs.fileInput.click()"
-                  elevation="2"
                 >
                   {{ tm("buttons.selectFile") }}
                 </v-btn>
@@ -890,6 +940,45 @@ const updateDialogPluginLogo = computed(() => {
                 </div>
 
                 <v-alert
+                  v-if="installUrlValidation.status === 'error'"
+                  type="error"
+                  variant="tonal"
+                  density="comfortable"
+                  class="market-install-alert mb-4"
+                >
+                  {{ installUrlValidation.message }}
+                </v-alert>
+                <div
+                  v-else-if="
+                    installUrlValidation.validating ||
+                    installUrlValidation.status === 'valid'
+                  "
+                  class="d-flex align-center text-caption text-medium-emphasis mb-4"
+                  style="gap: 8px"
+                >
+                  <v-progress-circular
+                    v-if="installUrlValidation.validating"
+                    indeterminate
+                    size="16"
+                    width="2"
+                    color="primary"
+                  />
+                  <v-icon
+                    v-else
+                    icon="mdi-check-circle"
+                    size="16"
+                    color="success"
+                  />
+                  <span>
+                    {{ installUrlValidation.message }}
+                    <span v-if="installUrlValidation.version">
+                      · {{ tm("table.headers.version") }}:
+                      {{ installUrlValidation.version }}
+                    </span>
+                  </span>
+                </div>
+
+                <v-alert
                   v-if="installUsesGithubSource"
                   type="warning"
                   variant="tonal"
@@ -916,8 +1005,8 @@ const updateDialogPluginLogo = computed(() => {
         <v-btn
           color="primary"
           variant="text"
-          :loading="loading_"
-          :disabled="loading_"
+          :loading="loading_ || installUrlValidation.validating"
+          :disabled="loading_ || installUrlValidation.validating"
           @click="newExtension()"
           >{{ tm("buttons.install") }}</v-btn
         >
@@ -928,7 +1017,7 @@ const updateDialogPluginLogo = computed(() => {
   <!-- 插件源管理对话框 -->
   <v-dialog v-model="showSourceManagerDialog" width="640">
     <v-card>
-      <v-card-title class="text-h3 pa-4 pl-6">{{
+      <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
         tm("market.sourceManagement")
       }}</v-card-title>
       <v-card-text>
@@ -1017,7 +1106,7 @@ const updateDialogPluginLogo = computed(() => {
   <!-- 添加/编辑自定义插件源对话框 -->
   <v-dialog v-model="showSourceDialog" width="500">
     <v-card>
-      <v-card-title class="text-h5">{{
+      <v-card-title class="text-h3 pa-4 pb-0 pl-6">{{
         editingSource ? tm("market.editSource") : tm("market.addSource")
       }}</v-card-title>
       <v-card-text>
@@ -1075,7 +1164,7 @@ const updateDialogPluginLogo = computed(() => {
         }}</v-btn>
         <v-btn
           color="primary"
-          variant="text"
+          variant="tonal"
           :loading="sourceResolving"
           :disabled="
             sourceResolving || (!sourceResolveCurrent && !sourceUrl.trim())
@@ -1094,7 +1183,7 @@ const updateDialogPluginLogo = computed(() => {
   <!-- 删除插件源确认对话框 -->
   <v-dialog v-model="showRemoveSourceDialog" width="400">
     <v-card>
-      <v-card-title class="text-h5 d-flex align-center">
+      <v-card-title class="text-h3 pa-4 pb-0 pl-6 d-flex align-center">
         <v-icon color="warning" class="mr-2">mdi-alert-circle</v-icon>
         {{ tm("dialogs.uninstall.title") }}
       </v-card-title>
@@ -1113,7 +1202,7 @@ const updateDialogPluginLogo = computed(() => {
           @click="showRemoveSourceDialog = false"
           >{{ tm("buttons.cancel") }}</v-btn
         >
-        <v-btn color="error" variant="text" @click="confirmRemoveSource">{{
+        <v-btn color="error" variant="tonal" @click="confirmRemoveSource">{{
           tm("buttons.deleteSource")
         }}</v-btn>
       </v-card-actions>
@@ -1191,7 +1280,11 @@ const updateDialogPluginLogo = computed(() => {
         <v-btn color="grey" variant="text" @click="closeUpdateConfirmDialog">
           {{ tm("buttons.cancel") }}
         </v-btn>
-        <v-btn color="primary" variant="flat" @click="confirmUpdatePlugin">
+        <v-btn
+          color="primary"
+          variant="tonal"
+          @click="confirmUpdatePlugin"
+        >
           {{ tm("dialogs.update.confirm") }}
         </v-btn>
       </v-card-actions>
@@ -1201,7 +1294,7 @@ const updateDialogPluginLogo = computed(() => {
   <!-- 强制更新确认对话框 -->
   <v-dialog v-model="forceUpdateDialog.show" max-width="420">
     <v-card class="rounded-lg">
-      <v-card-title class="text-h6 d-flex align-center">
+      <v-card-title class="text-h3 pa-4 pb-0 pl-6 d-flex align-center">
         <v-icon color="info" class="mr-2">mdi-information-outline</v-icon>
         {{ tm("dialogs.forceUpdate.title") }}
       </v-card-title>
@@ -1213,7 +1306,7 @@ const updateDialogPluginLogo = computed(() => {
         <v-btn variant="text" @click="forceUpdateDialog.show = false">{{
           tm("buttons.cancel")
         }}</v-btn>
-        <v-btn color="primary" variant="flat" @click="confirmForceUpdate">{{
+        <v-btn color="primary" variant="tonal" @click="confirmForceUpdate">{{
           tm("dialogs.forceUpdate.confirm")
         }}</v-btn>
       </v-card-actions>

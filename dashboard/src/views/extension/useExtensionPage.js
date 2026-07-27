@@ -94,7 +94,9 @@ export const useExtensionPage = () => {
     metadata: {},
     config: {},
     i18n: {},
+    log_level: null,
   });
+  const pluginLogLevelSaving = ref(false);
   const pluginMarketData = ref([]);
   const loadingDialog = reactive({
     show: false,
@@ -151,6 +153,13 @@ export const useExtensionPage = () => {
     supported: true,
     message: "",
   });
+  const installUrlValidation = reactive({
+    validating: false,
+    status: "idle",
+    message: "",
+    version: "",
+    metadata: null,
+  });
 
   // AstrBot 版本范围不兼容警告对话框
   const versionSupportDialog = reactive({
@@ -184,6 +193,8 @@ export const useExtensionPage = () => {
     extension: null,
     candidates: [],
     selectedKey: "",
+    pendingUpdate: null,
+    validationSerial: 0,
   });
 
   // 插件市场相关
@@ -651,6 +662,10 @@ export const useExtensionPage = () => {
 
   const findMarketPluginForExtension = (extension) => {
     if (!extension) return null;
+    const source = extension.install_source || {};
+    if (source.implicit === true || source.install_method !== "market") {
+      return null;
+    }
     if (extension.update_market_plugin) {
       return extension.update_market_plugin;
     }
@@ -705,6 +720,7 @@ export const useExtensionPage = () => {
       if (
         !extension.updates_enabled ||
         !source ||
+        source.implicit === true ||
         source.install_method !== "market"
       ) {
         return;
@@ -817,9 +833,28 @@ export const useExtensionPage = () => {
     updateConfirmDialog.forceUpdate = false;
   };
 
-  const updateExtension = async (extension_name, forceUpdate = false) => {
-    const ext = getInstalledExtensionByName(extension_name);
-    if (ext && ext.updates_enabled === false) {
+  const buildUpdateContext = (ext) => {
+    const source = ext?.install_source || null;
+    const installMethod = String(source?.install_method || "")
+      .trim()
+      .toLowerCase();
+    const repoUrl = normalizeInstallUrl(ext?.repo || source?.repo);
+    const needsSourceSelection =
+      Boolean(ext) &&
+      (!source ||
+        source.implicit === true ||
+        !["market", "github"].includes(installMethod));
+
+    return { source, installMethod, repoUrl, needsSourceSelection };
+  };
+
+  const performUpdateWithoutSourceSelection = (
+    extensionName,
+    ext,
+    forceUpdate,
+    repoUrl,
+  ) => {
+    if (ext && ext.updates_enabled === false && !repoUrl) {
       toast(
         ext.update_disabled_reason || tm("messages.updateDisabled"),
         "info",
@@ -829,12 +864,44 @@ export const useExtensionPage = () => {
 
     // 如果没有检测到更新且不是强制更新，则弹窗确认
     if (!ext?.has_update && !forceUpdate) {
-      forceUpdateDialog.extensionName = extension_name;
+      forceUpdateDialog.extensionName = extensionName;
       forceUpdateDialog.show = true;
       return;
     }
 
-    openUpdateConfirmDialog(extension_name, forceUpdate);
+    openUpdateConfirmDialog(extensionName, forceUpdate);
+  };
+
+  const updateExtension = async (
+    extension_name,
+    forceUpdate = false,
+    options = {},
+  ) => {
+    const ext = getInstalledExtensionByName(extension_name);
+    const { repoUrl, needsSourceSelection } = buildUpdateContext(ext);
+
+    if (
+      needsSourceSelection &&
+      !options.skipSourceCheck &&
+      !repoUrl
+    ) {
+      toast(tm("messages.updateDisabled"), "info");
+      return;
+    }
+
+    if (needsSourceSelection && !options.skipSourceCheck) {
+      await openPluginSourceBindingDialog(ext, {
+        pendingUpdate: { extensionName: extension_name, forceUpdate },
+      });
+      return;
+    }
+
+    performUpdateWithoutSourceSelection(
+      extension_name,
+      ext,
+      forceUpdate,
+      repoUrl,
+    );
   };
 
   const confirmUpdatePlugin = async () => {
@@ -845,6 +912,8 @@ export const useExtensionPage = () => {
       return;
     }
 
+    const hasDownloadUrl = Boolean(getUpdateDownloadUrl(ext));
+
     closeUpdateConfirmDialog();
     loadingDialog.title = tm("status.loading");
     loadingDialog.statusCode = 0;
@@ -852,7 +921,7 @@ export const useExtensionPage = () => {
     loadingDialog.show = true;
     try {
       const res = await pluginApi.update(extensionName, {
-        proxy: getUpdateDownloadUrl(ext) ? "" : getSelectedGitHubProxy(),
+        proxy: hasDownloadUrl ? "" : getSelectedGitHubProxy(),
       });
 
       if (res.data.status === "error") {
@@ -905,11 +974,11 @@ export const useExtensionPage = () => {
     updateAllConfirmDialog.show = false;
   };
 
-  const confirmForceUpdate = () => {
+  const confirmForceUpdate = async () => {
     const name = forceUpdateDialog.extensionName;
     forceUpdateDialog.show = false;
     forceUpdateDialog.extensionName = "";
-    openUpdateConfirmDialog(name, true);
+    await updateExtension(name, true);
   };
 
   const updateAllExtensions = async () => {
@@ -976,9 +1045,12 @@ export const useExtensionPage = () => {
   };
 
   const pluginOn = async (extension) => {
+    const previousActivated = extension.activated;
+    extension.activated = true;
     try {
       const res = await pluginApi.setEnabled(extension.name, true);
       if (res.data.status === "error") {
+        extension.activated = previousActivated;
         toast(res.data.message, "error");
         return;
       }
@@ -987,20 +1059,25 @@ export const useExtensionPage = () => {
 
       await checkAndPromptConflicts();
     } catch (err) {
+      extension.activated = previousActivated;
       toast(err, "error");
     }
   };
 
   const pluginOff = async (extension) => {
+    const previousActivated = extension.activated;
+    extension.activated = false;
     try {
       const res = await pluginApi.setEnabled(extension.name, false);
       if (res.data.status === "error") {
+        extension.activated = previousActivated;
         toast(res.data.message, "error");
         return;
       }
       toast(res.data.message, "success");
-      getExtensions();
+      await getExtensions();
     } catch (err) {
+      extension.activated = previousActivated;
       toast(err, "error");
     }
   };
@@ -1009,35 +1086,87 @@ export const useExtensionPage = () => {
     curr_namespace.value = extension_name;
     currentConfigPlugin.value = extension_name;
     configDialog.value = true;
+    extension_config.log_level = null;
     try {
       const res = await pluginApi.config(extension_name);
+      // Discard the response if the user has already switched to another
+      // plugin's config dialog while the request was in flight.
+      if (curr_namespace.value !== extension_name) return;
       extension_config.metadata = res.data.data.metadata;
       extension_config.config = res.data.data.config;
       extension_config.i18n = res.data.data.i18n || {};
+      extension_config.log_level = res.data.data.log_level ?? null;
     } catch (err) {
       toast(err, "error");
     }
   };
 
+  const updatePluginLogLevel = async (level) => {
+    if (pluginLogLevelSaving.value) return;
+    const pluginName = curr_namespace.value;
+    const previous = extension_config.log_level;
+    extension_config.log_level = level;
+    pluginLogLevelSaving.value = true;
+    try {
+      const res = await pluginApi.updateLogLevel(pluginName, level);
+      if (res.data.status === "ok") {
+        const serverLevel = res.data.data?.log_level;
+        // Preserve null as "follow global" and only skip synchronization
+        // when an older server does not return the field.
+        if (
+          curr_namespace.value === pluginName &&
+          serverLevel !== undefined
+        ) {
+          extension_config.log_level = serverLevel;
+        }
+        toast(tm("messages.logLevelUpdated"), "success");
+      } else {
+        // Roll back the optimistic update, unless the dialog has already
+        // been switched to another plugin.
+        if (curr_namespace.value === pluginName) {
+          extension_config.log_level = previous;
+        }
+        toast(res.data.message || tm("messages.operationFailed"), "error");
+      }
+    } catch (err) {
+      if (curr_namespace.value === pluginName) {
+        extension_config.log_level = previous;
+      }
+      toast(err, "error");
+    } finally {
+      pluginLogLevelSaving.value = false;
+    }
+  };
+
   const updateConfig = async () => {
+    loadingDialog.title = tm("status.loading");
+    loadingDialog.statusCode = 0;
+    loadingDialog.result = "";
+    loadingDialog.show = true;
     try {
       const res = await pluginApi.updateConfig(
         curr_namespace.value,
         extension_config.config,
       );
-      if (res.data.status === "ok") {
-        toast(res.data.message, "success");
-      } else {
+      if (res.data.status !== "ok") {
         toast(res.data.message, "error");
+        onLoadingDialogResult(2, res.data.message, -1);
+        return;
       }
+
+      toast(res.data.message, "success");
+      onLoadingDialogResult(1, res.data.message);
       configDialog.value = false;
       currentConfigPlugin.value = "";
       extension_config.metadata = {};
       extension_config.config = {};
       extension_config.i18n = {};
+      extension_config.log_level = null;
       getExtensions();
     } catch (err) {
-      toast(err, "error");
+      const errMsg = resolveErrorMessage(err, tm("messages.operationFailed"));
+      toast(errMsg, "error");
+      onLoadingDialogResult(2, errMsg, -1);
     }
   };
 
@@ -1120,6 +1249,36 @@ export const useExtensionPage = () => {
     () =>
       !selectedInstallDownloadUrl.value && isGithubRepoUrl(extension_url.value),
   );
+
+  const resetInstallUrlValidation = () => {
+    installUrlValidation.validating = false;
+    installUrlValidation.status = "idle";
+    installUrlValidation.message = "";
+    installUrlValidation.version = "";
+    installUrlValidation.metadata = null;
+  };
+
+  const validatePluginRepo = async (payload) => {
+    const res = await pluginApi.validateRepo(payload);
+    if (res.data.status === "error") {
+      throw new Error(res.data.message || tm("messages.pluginValidateFailed"));
+    }
+    return {
+      data: res.data.data || {},
+      message: res.data.message || tm("messages.pluginValidateSuccess"),
+    };
+  };
+
+  const buildInstallRepoValidationPayload = () => {
+    const url = String(extension_url.value || "").trim();
+    if (!url) {
+      return null;
+    }
+    return {
+      url,
+      proxy: getSelectedGitHubProxy(),
+    };
+  };
 
   // 为表格视图创建一个处理安装插件的函数
   const handleInstallPlugin = async (plugin) => {
@@ -1222,7 +1381,157 @@ export const useExtensionPage = () => {
         normalizeRegistryUrl(sourceUrl.value),
   );
 
-  const openPluginSourceBindingDialog = async (extension) => {
+  const validateSourceBindingRepoCandidate = async (candidate) => {
+    if (!candidate || candidate.install_method !== "github") {
+      return;
+    }
+    if (candidate.validation_status === "loading") {
+      return;
+    }
+
+    const serial = ++sourceBindingDialog.validationSerial;
+    candidate.validation_status = "loading";
+    candidate.validation_message = "";
+    candidate.version = "";
+    try {
+      const { data, message } = await validatePluginRepo({
+        url: candidate.repo,
+        proxy: getSelectedGitHubProxy(),
+      });
+      if (serial !== sourceBindingDialog.validationSerial) {
+        return;
+      }
+      candidate.version = data.version || tm("status.unknown");
+      candidate.validation_status = "valid";
+      candidate.validation_message = message;
+      candidate.metadata = data;
+    } catch (error) {
+      if (serial !== sourceBindingDialog.validationSerial) {
+        return;
+      }
+      candidate.version = tm("status.unknown");
+      candidate.validation_status = "error";
+      candidate.validation_message = resolveErrorMessage(
+        error,
+        tm("messages.pluginValidateFailed"),
+      );
+    }
+  };
+
+  const resolvePluginSourceCandidates = async (extension) => {
+    const extensionRepo = normalizeInstallUrl(
+      extension.repo || extension.install_source?.repo,
+    ).toLowerCase();
+    if (!extensionRepo) {
+      return { candidates: [], selectedKey: "" };
+    }
+
+    await loadCustomSources();
+    const sources = [
+      { name: tm("market.defaultSource"), url: null },
+      ...customSources.value.map((source) => ({
+        name: source.name,
+        url: source.url,
+      })),
+    ];
+    const currentMarketPluginId = String(
+      extension.install_source?.market_plugin_id || "",
+    ).trim();
+    const currentRegistryUrl = normalizeRegistryUrl(
+      extension.install_source?.registry_url,
+    );
+    const currentInstallMethod = String(
+      extension.install_source?.install_method || "",
+    )
+      .trim()
+      .toLowerCase();
+    const seen = new Set();
+    const candidates = [];
+
+    for (const source of sources) {
+      let marketPlugins = [];
+      try {
+        marketPlugins = await commonStore.getPluginCollections(
+          false,
+          source.url || null,
+        );
+      } catch (error) {
+        console.warn("Failed to load plugin source for binding:", error);
+        continue;
+      }
+
+      marketPlugins.forEach((plugin) => {
+        const marketPluginId = getMarketPluginId(plugin);
+        const pluginRepo = normalizeInstallUrl(plugin.repo).toLowerCase();
+        if (!marketPluginId || !pluginRepo || pluginRepo !== extensionRepo) {
+          return;
+        }
+        if (
+          currentMarketPluginId &&
+          marketPluginId !== currentMarketPluginId
+        ) {
+          return;
+        }
+
+        const registryUrl = normalizeRegistryUrl(source.url);
+        const key = `${registryUrl}|${marketPluginId}|${pluginRepo}`;
+        if (seen.has(key)) {
+          return;
+        }
+        seen.add(key);
+        candidates.push({
+          key,
+          install_method: "market",
+          registry_url: registryUrl || null,
+          registry_name: source.name,
+          market_plugin_id: marketPluginId,
+          repo: plugin.repo,
+          download_url: plugin.download_url || "",
+          version: plugin.version || tm("status.unknown"),
+          validation_status: "valid",
+          validation_message: "",
+        });
+      });
+    }
+
+    candidates.push({
+      key: `github||${extensionRepo}`,
+      install_method: "github",
+      registry_url: null,
+      registry_name: tm("dialogs.sourceBinding.repoOption"),
+      market_plugin_id: "",
+      repo: extension.repo || extension.install_source?.repo,
+      download_url: "",
+      version: "",
+      validation_status: "idle",
+      validation_message: "",
+    });
+
+    const currentCandidate =
+      currentInstallMethod === "github"
+        ? candidates.find(
+            (candidate) =>
+              candidate.install_method === "github" &&
+              normalizeInstallUrl(candidate.repo).toLowerCase() === extensionRepo,
+          )
+        : candidates.find((candidate) => {
+            return (
+              candidate.install_method === "market" &&
+              normalizeRegistryUrl(candidate.registry_url) ===
+                currentRegistryUrl &&
+              (!currentMarketPluginId ||
+                candidate.market_plugin_id === currentMarketPluginId) &&
+              normalizeInstallUrl(candidate.repo).toLowerCase() === extensionRepo
+            );
+          });
+
+    return {
+      candidates,
+      selectedKey: currentCandidate?.key || candidates[0]?.key || "",
+    };
+  };
+
+  const openPluginSourceBindingDialog = async (extension, options = {}) => {
     if (!extension) return;
     sourceBindingDialog.show = true;
     sourceBindingDialog.loading = true;
@@ -1230,99 +1539,43 @@ export const useExtensionPage = () => {
     sourceBindingDialog.extension = extension;
     sourceBindingDialog.candidates = [];
     sourceBindingDialog.selectedKey = "";
-
-    const extensionRepo = normalizeInstallUrl(
-      extension.repo || extension.install_source?.repo,
-    ).toLowerCase();
-    if (!extensionRepo) {
-      sourceBindingDialog.loading = false;
-      return;
-    }
+    sourceBindingDialog.pendingUpdate = options.pendingUpdate || null;
 
     try {
-      await loadCustomSources();
-      const sources = [
-        { name: tm("market.defaultSource"), url: null },
-        ...customSources.value.map((source) => ({
-          name: source.name,
-          url: source.url,
-        })),
-      ];
-      const currentMarketPluginId = String(
-        extension.install_source?.market_plugin_id || "",
-      ).trim();
-      const currentRegistryUrl = normalizeRegistryUrl(
-        extension.install_source?.registry_url,
-      );
-      const seen = new Set();
-      const candidates = [];
-
-      for (const source of sources) {
-        let marketPlugins = [];
-        try {
-          marketPlugins = await commonStore.getPluginCollections(
-            false,
-            source.url || null,
-          );
-        } catch (error) {
-          console.warn("Failed to load plugin source for binding:", error);
-          continue;
-        }
-
-        marketPlugins.forEach((plugin) => {
-          const marketPluginId = getMarketPluginId(plugin);
-          const pluginRepo = normalizeInstallUrl(plugin.repo).toLowerCase();
-          if (!marketPluginId || !pluginRepo || pluginRepo !== extensionRepo) {
-            return;
-          }
-          if (
-            currentMarketPluginId &&
-            marketPluginId !== currentMarketPluginId
-          ) {
-            return;
-          }
-
-          const registryUrl = normalizeRegistryUrl(source.url);
-          const key = `${registryUrl}|${marketPluginId}|${pluginRepo}`;
-          if (seen.has(key)) {
-            return;
-          }
-          seen.add(key);
-          candidates.push({
-            key,
-            registry_url: registryUrl || null,
-            registry_name: source.name,
-            market_plugin_id: marketPluginId,
-            repo: plugin.repo,
-            download_url: plugin.download_url || "",
-            version: plugin.version || tm("status.unknown"),
-          });
-        });
-      }
-
-      const currentCandidate = candidates.find((candidate) => {
-        return (
-          normalizeRegistryUrl(candidate.registry_url) === currentRegistryUrl &&
-          (!currentMarketPluginId ||
-            candidate.market_plugin_id === currentMarketPluginId) &&
-          normalizeInstallUrl(candidate.repo).toLowerCase() === extensionRepo
-        );
-      });
+      const { candidates, selectedKey } =
+        await resolvePluginSourceCandidates(extension);
       sourceBindingDialog.candidates = candidates;
-      sourceBindingDialog.selectedKey =
-        currentCandidate?.key || candidates[0]?.key || "";
+      sourceBindingDialog.selectedKey = selectedKey;
     } finally {
       sourceBindingDialog.loading = false;
+    }
+    const selectedCandidate = sourceBindingDialog.candidates.find(
+      (item) => item.key === sourceBindingDialog.selectedKey,
+    );
+    if (selectedCandidate?.install_method === "github") {
+      void validateSourceBindingRepoCandidate(selectedCandidate);
     }
   };
 
   const closePluginSourceBindingDialog = () => {
+    sourceBindingDialog.validationSerial += 1;
     sourceBindingDialog.show = false;
     sourceBindingDialog.loading = false;
     sourceBindingDialog.saving = false;
     sourceBindingDialog.extension = null;
     sourceBindingDialog.candidates = [];
     sourceBindingDialog.selectedKey = "";
+    sourceBindingDialog.pendingUpdate = null;
+  };
+
+  const continuePendingUpdateAfterBinding = async (pendingUpdate) => {
+    if (!pendingUpdate) {
+      return;
+    }
+
+    await updateExtension(pendingUpdate.extensionName, pendingUpdate.forceUpdate, {
+      skipSourceCheck: true,
+    });
   };
 
   const confirmPluginSourceBinding = async () => {
@@ -1336,10 +1589,16 @@ export const useExtensionPage = () => {
 
     sourceBindingDialog.saving = true;
     try {
-      const res = await pluginApi.bindSource(extension.name, {
-        registry_url: candidate.registry_url,
-        market_plugin_id: candidate.market_plugin_id,
-      });
+      const pendingUpdate = sourceBindingDialog.pendingUpdate;
+      const payload =
+        candidate.install_method === "github"
+          ? { install_method: "github" }
+          : {
+              install_method: "market",
+              registry_url: candidate.registry_url,
+              market_plugin_id: candidate.market_plugin_id,
+            };
+      const res = await pluginApi.bindSource(extension.name, payload);
       if (res.data.status === "error") {
         toast(res.data.message, "error");
         return;
@@ -1350,6 +1609,7 @@ export const useExtensionPage = () => {
       await getExtensions();
       checkAlreadyInstalled();
       await checkUpdate();
+      await continuePendingUpdateAfterBinding(pendingUpdate);
     } catch (error) {
       const errorMsg =
         error.response?.data?.message || error.message || String(error);
@@ -1846,6 +2106,45 @@ export const useExtensionPage = () => {
     loading_.value = true;
 
     try {
+      if (source === "url" && !selectedInstallDownloadUrl.value) {
+        if (!installUsesGithubSource.value) {
+          toast(tm("messages.invalidGithubRepo"), "error");
+          loading_.value = false;
+          return;
+        }
+
+        const validationPayload = buildInstallRepoValidationPayload();
+        if (!validationPayload) {
+          toast(tm("messages.fillUrlOrFile"), "error");
+          loading_.value = false;
+          return;
+        }
+        installUrlValidation.validating = true;
+        installUrlValidation.status = "loading";
+        installUrlValidation.message = tm("messages.validatingPlugin");
+        installUrlValidation.version = "";
+        installUrlValidation.metadata = null;
+        try {
+          const { data, message } = await validatePluginRepo(validationPayload);
+          installUrlValidation.status = "valid";
+          installUrlValidation.message = message;
+          installUrlValidation.version = data.version || "";
+          installUrlValidation.metadata = data;
+        } catch (error) {
+          const message = resolveErrorMessage(
+            error,
+            tm("messages.pluginValidateFailed"),
+          );
+          installUrlValidation.status = "error";
+          installUrlValidation.message = message;
+          toast(message, "error");
+          loading_.value = false;
+          return;
+        } finally {
+          installUrlValidation.validating = false;
+        }
+      }
+
       const res = await performInstallRequest({
         source,
         ignoreVersionCheck: shouldIgnoreVersionCheck,
@@ -1897,6 +2196,13 @@ export const useExtensionPage = () => {
 
   const selectedUpdateMarketPlugin = computed(() =>
     findMarketPluginForExtension(selectedUpdateExtension.value),
+  );
+
+  const selectedSourceBindingCandidate = computed(
+    () =>
+      sourceBindingDialog.candidates.find(
+        (item) => item.key === sourceBindingDialog.selectedKey,
+      ) || null,
   );
 
   const selectedUpdateDownloadUrl = computed(() =>
@@ -2035,6 +2341,7 @@ export const useExtensionPage = () => {
   watch(
     [() => dialog.value, () => extension_url.value, () => uploadTab.value],
     async ([dialogOpen, _, currentUploadTab]) => {
+      resetInstallUrlValidation();
       if (!dialogOpen || currentUploadTab !== "url") {
         installSupport.checked = false;
         installSupport.supported = true;
@@ -2045,6 +2352,24 @@ export const useExtensionPage = () => {
         return;
       }
       await checkInstallVersionSupport();
+    },
+  );
+
+  watch(
+    [() => sourceBindingDialog.show, () => sourceBindingDialog.selectedKey],
+    ([dialogOpen]) => {
+      if (!dialogOpen || sourceBindingDialog.loading) {
+        return;
+      }
+      const candidate = sourceBindingDialog.candidates.find(
+        (item) => item.key === sourceBindingDialog.selectedKey,
+      );
+      if (
+        candidate?.install_method === "github" &&
+        candidate.validation_status !== "valid"
+      ) {
+        void validateSourceBindingRepoCandidate(candidate);
+      }
     },
   );
 
@@ -2123,6 +2448,7 @@ export const useExtensionPage = () => {
     selectedDangerPlugin,
     selectedMarketInstallPlugin,
     installSupport,
+    installUrlValidation,
     versionSupportDialog,
     showUninstallDialog,
     uninstallTarget,
@@ -2141,6 +2467,7 @@ export const useExtensionPage = () => {
     editingSource,
     originalSourceUrl,
     sourceBindingDialog,
+    selectedSourceBindingCandidate,
     extension_url,
     dialog,
     upload_file,
@@ -2192,6 +2519,8 @@ export const useExtensionPage = () => {
     pluginOff,
     openExtensionConfig,
     updateConfig,
+    updatePluginLogLevel,
+    pluginLogLevelSaving,
     showPluginInfo,
     reloadPlugin,
     viewReadme,

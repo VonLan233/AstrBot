@@ -13,6 +13,7 @@ from PIL import Image as PILImage
 import astrbot.core.provider.sources.openai_source as openai_source_module
 import astrbot.core.provider.sources.request_retry as request_retry
 from astrbot.core.agent.message import ContentPart, TextPart
+from astrbot.core.config.default import CONFIG_METADATA_2
 from astrbot.core.exceptions import EmptyModelOutputError
 from astrbot.core.provider.entities import LLMResponse
 from astrbot.core.provider.sources.groq_source import ProviderGroq
@@ -115,6 +116,17 @@ def _make_opencode_zen_provider_for_unit_tests(
     models: list[str] | None = None,
 ) -> ProviderOpenCodeZen:
     return _OpenCodeZenUnitProvider(models or [])
+
+
+def test_volcengine_ark_preset_uses_openai_compatible_endpoint():
+    template = CONFIG_METADATA_2["provider_group"]["metadata"]["provider"][
+        "config_template"
+    ]["Volcengine Ark"]
+
+    assert template["type"] == "openai_chat_completion"
+    assert template["provider"] == "volcengine-ark"
+    assert template["api_base"] == "https://ark.cn-beijing.volces.com/api/v3"
+    assert template["model"] == "deepseek-v4-flash-ga-260731"
 
 
 def test_create_http_client_uses_openai_httpx_module(monkeypatch):

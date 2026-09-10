@@ -206,7 +206,7 @@ class SendMessageToUserTool(FunctionTool[AstrAgentContext]):
 
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
-    ) -> ToolExecResult:
+    ) -> ToolExecResult | None:
         # Security: only AstrBot admins can send messages to other sessions.
         # Non-admin users are always restricted to their own session.
         # See https://github.com/AstrBotDevs/AstrBot/issues/7822
@@ -359,6 +359,8 @@ class SendMessageToUserTool(FunctionTool[AstrAgentContext]):
                     "_send_message_to_user_current_session_plain_texts",
                     sent_plain_texts,
                 )
+            if context.context.event.get_platform_name() == "cron":
+                return None
         return f"Message sent to session {target_session}"
 
 

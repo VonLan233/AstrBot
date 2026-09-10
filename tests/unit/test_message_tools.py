@@ -15,6 +15,7 @@ def _make_context(
     role="admin",
     require_admin=True,
     runtime="local",
+    platform_name="test",
 ):
     """Build a minimal ContextWrapper for SendMessageToUserTool."""
     cfg = {
@@ -29,6 +30,7 @@ def _make_context(
         role=role,
         _has_send_oper=False,
         get_sender_id=lambda: "user-1",
+        get_platform_name=lambda: platform_name,
     )
     event.set_extra = lambda key, value: extras.__setitem__(key, value)
     event.get_extra = lambda key, default=None: extras.get(key, default)
@@ -255,7 +257,10 @@ async def test_cron_context_current_session_is_target_session():
     tool = SendMessageToUserTool()
     # cron 任务的目标 session（用户配置的完整三段式）
     cron_target_session = "feishu:GroupMessage:oc_cron_target"
-    ctx = _make_context(current_session=cron_target_session)
+    ctx = _make_context(
+        current_session=cron_target_session,
+        platform_name="cron",
+    )
 
     # LLM 在 cron 上下文中只传了 session_id 部分
     result = await tool.call(
@@ -263,7 +268,7 @@ async def test_cron_context_current_session_is_target_session():
         messages=[{"type": "plain", "text": "cron message"}],
         session="oc_cron_target",
     )
-    assert "Message sent to session" in result
+    assert result is None
     call_args = ctx.context.context.send_message.call_args
     target_session = call_args[0][0]
     # 补全后的 session 应与 cron 目标 session 完全一致

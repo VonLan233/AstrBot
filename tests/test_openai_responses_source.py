@@ -148,6 +148,45 @@ def test_convert_chat_history_preserves_response_items_and_function_calls():
     ]
 
 
+def test_opencode_only_replays_reasoning_for_active_tool_call():
+    provider = _make_provider({"api_base": "https://opencode.ai/zen/v1"})
+    reasoning_state = json.dumps(
+        {
+            "type": provider._REASONING_STATE_TYPE,
+            "items": [{"type": "reasoning", "encrypted_content": "state"}],
+        }
+    )
+
+    response_input = provider._convert_chat_messages_to_response_input(
+        [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "think", "encrypted": reasoning_state},
+                    {"type": "text", "text": "old answer"},
+                ],
+            },
+            {"role": "user", "content": "new request"},
+            {
+                "role": "assistant",
+                "content": [{"type": "think", "encrypted": reasoning_state}],
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "done"},
+        ]
+    )
+
+    assert [item for item in response_input if item["type"] == "reasoning"] == [
+        {"type": "reasoning", "encrypted_content": "state"}
+    ]
+
+
 def test_deepseek_converts_plain_reasoning_history_to_reasoning_item():
     provider = _make_provider(
         {

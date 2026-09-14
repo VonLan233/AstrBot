@@ -77,8 +77,17 @@ class ProviderOpenAIResponses(ProviderOpenAIOfficial):
             self.provider_config.get("provider") == "deepseek"
             or host == "api.deepseek.com"
         )
+        last_assistant_index = next(
+            (
+                index
+                for index in range(len(messages) - 1, -1, -1)
+                if isinstance(messages[index], dict)
+                and messages[index].get("role") == "assistant"
+            ),
+            -1,
+        )
 
-        for message in messages:
+        for message_index, message in enumerate(messages):
             if not isinstance(message, dict):
                 continue
 
@@ -133,7 +142,13 @@ class ProviderOpenAIResponses(ProviderOpenAIOfficial):
                                     for item in state["items"]
                                     if isinstance(item, dict)
                                 ]
-                        if restored_items:
+                        if restored_items and (
+                            host != "opencode.ai"
+                            or (
+                                message_index == last_assistant_index
+                                and bool(message.get("tool_calls"))
+                            )
+                        ):
                             reasoning_items.extend(restored_items)
                         elif is_deepseek and part.get("think"):
                             reasoning_items.append(
